@@ -1,5 +1,5 @@
 ﻿// 2025. 11. 04. AI-Tag
-// This was created with the help of Assistant, a Unity Artificial Intelligence product.
+// Created with the help of Assistant, a Unity Artificial Intelligence product.
 
 using System.Collections.Generic;
 using UnityEngine;
@@ -7,8 +7,10 @@ using UnityEngine;
 [RequireComponent(typeof(Collider))]
 public class ClickToPathMover_Raycast : MonoBehaviour
 {
-    [Header("Movement")]
-    [SerializeField] private float speed = 3f;
+    [Header("Movement (1 unit = 1 meter)")]
+    [SerializeField] private float speed = 6f;                 // meters per second
+    [SerializeField] private float rotationSmoothTime = 0.08f; // seconds; higher = smoother
+    [SerializeField] private float maxTurnRateDegPerSec = 360f;// deg/s cap
 
     [Header("Drawing")]
     [SerializeField] private float minPointDistance = 0.1f;
@@ -16,19 +18,35 @@ public class ClickToPathMover_Raycast : MonoBehaviour
     [SerializeField] private float lineWidth = 0.05f;
     [SerializeField] private LayerMask clickableLayers = ~0;
 
+    [Header("Landing Effects (last X% of path)")]
+    [SerializeField] private bool enableLandingSlowdown = true;
+    [SerializeField] private bool enableLandingScaling = true;
+    [SerializeField, Range(0f, 1f)] private float landingStartPercent = 0.90f;
+    [SerializeField] private Vector3 landingScale = Vector3.one * 0.3f;
+    [SerializeField] private Transform scalingTarget; // Default = transform
+
+    // Internal state
     private Camera cam;
     private LineRenderer line;
     private readonly List<Vector3> points = new();
-    private bool isDrawing = false;
-    private bool isMoving = false;
-    private int currentIdx = 0;
+    private readonly List<float> segLengths = new();
+    private float totalLength;
+    private int segIndex;
+    private float alongSeg;
+    private float traveled;
+    private bool isDrawing;
+    private bool isMoving;
+    private Vector3 startScale;
 
-    private Vector3 currentVelocity = Vector3.zero; // Used for SmoothDamp
+    // Rotation smoothing
+    private float currentHeadingDeg;
+    private float headingVel;
 
     void Awake()
     {
-        cam = Camera.main; // Camera with MainCamera tag
-        if (cam == null) Debug.LogError("No Camera with MainCameraTag");
+        cam = Camera.main;
+        if (cam == null)
+            Debug.LogError("No Camera with MainCameraTag");
 
         line = gameObject.AddComponent<LineRenderer>();
         line.material = new Material(Shader.Find("Sprites/Default"));
@@ -38,46 +56,56 @@ public class ClickToPathMover_Raycast : MonoBehaviour
         line.startColor = Color.yellow;
         line.endColor = Color.yellow;
         line.positionCount = 0;
+        line.useWorldSpace = true;
+
+        if (scalingTarget == null)
+            scalingTarget = transform; // scales sprite + collider
+        startScale = scalingTarget.localScale;
+
+        currentHeadingDeg = transform.eulerAngles.z;
     }
 
     void Update()
     {
-        // 1) Click start: only begin drawing if we actually hit THIS object
-        if (Input.GetMouseButtonDown(0))
+        // Start drawing on click if this object was hit
+        if (Input.GetMouseButtonDown(0) && HitThisObjectWithRay())
         {
-            if (HitThisObjectWithRay())
-            {
-                Debug.Log("Click: you hit the object, starting drawing.");
-                isDrawing = true;
-                isMoving = false;
-                points.Clear();
-                line.positionCount = 0;
-                TryAddPoint(MouseWorldOnZPlane());
-            }
-        }
-
-        // 2) While drawing, add points
-        if (isDrawing && Input.GetMouseButton(0))
-        {
+            isDrawing = true;
+            isMoving = false;
+            points.Clear();
+            segLengths.Clear();
+            totalLength = 0f;
+            line.positionCount = 0;
+            scalingTarget.localScale = startScale;
+            headingVel = 0f;
             TryAddPoint(MouseWorldOnZPlane());
         }
 
-        // 3) Mouse release: start moving
+        // Add points while holding
+        if (isDrawing && Input.GetMouseButton(0))
+            TryAddPoint(MouseWorldOnZPlane());
+
+        // On release, bake path
         if (isDrawing && Input.GetMouseButtonUp(0))
         {
             isDrawing = false;
             if (points.Count > 1)
             {
+                PreparePath();
+
+                if (GetBlendedDir(out Vector3 initDir))
+                {
+                    float initAngle = Mathf.Atan2(initDir.y, initDir.x) * Mathf.Rad2Deg - 90f;
+                    currentHeadingDeg = initAngle;
+                    transform.rotation = Quaternion.Euler(0f, 0f, currentHeadingDeg);
+                }
+
                 isMoving = true;
-                currentIdx = 0;
             }
         }
 
-        // 4) Movement along the path
         if (isMoving)
-        {
             MoveAlongPath();
-        }
     }
 
     bool HitThisObjectWithRay()
@@ -85,9 +113,7 @@ public class ClickToPathMover_Raycast : MonoBehaviour
         if (cam == null) return false;
         Ray ray = cam.ScreenPointToRay(Input.mousePosition);
         if (Physics.Raycast(ray, out RaycastHit hit, 1000f, clickableLayers, QueryTriggerInteraction.Collide))
-        {
             return hit.collider != null && hit.collider.gameObject == gameObject;
-        }
         return false;
     }
 
@@ -110,30 +136,142 @@ public class ClickToPathMover_Raycast : MonoBehaviour
         }
     }
 
+    void PreparePath()
+    {
+        segLengths.Clear();
+        totalLength = 0f;
+
+        for (int i = 0; i < points.Count - 1; i++)
+        {
+            float d = Vector3.Distance(points[i], points[i + 1]);
+            segLengths.Add(d);
+            totalLength += d;
+        }
+
+        segIndex = 0;
+        alongSeg = 0f;
+        traveled = 0f;
+        scalingTarget.localScale = startScale;
+    }
+
     void MoveAlongPath()
     {
-        Vector3 target = points[currentIdx];
-        
-        // Smoothly move towards the target point
-        transform.position = Vector3.SmoothDamp(transform.position, target, ref currentVelocity, 0.1f);
-
-        // Rotate towards the next point (2D rotation with 90-degree offset)
-        Vector3 direction = target - transform.position;
-        if (direction.sqrMagnitude > 0.001f) // Avoid jitter when very close to the target
+        if (points.Count < 2 || segIndex >= points.Count - 1)
         {
-            float angle = Mathf.Atan2(direction.y, direction.x) * Mathf.Rad2Deg;
-            transform.rotation = Quaternion.Euler(0, 0, angle - 90f); // Subtract 90 degrees to align the nose
+            isMoving = false;
+            return;
         }
 
-        // Check if the object has reached the target point
-        if (Vector3.Distance(transform.position, target) <= 0.05f) // Slightly increase the threshold
+        float progress = (totalLength <= 1e-6f) ? 1f : (traveled / totalLength);
+
+        // Landing scaling
+        if (enableLandingScaling && progress >= landingStartPercent)
         {
-            currentIdx++;
-            if (currentIdx >= points.Count)
+            float t = Mathf.InverseLerp(landingStartPercent, 1f, progress);
+            float s = t * t * (3f - 2f * t);
+            scalingTarget.localScale = Vector3.Lerp(startScale, landingScale, s);
+        }
+
+        // Slowdown
+        float slowFactor = 2f;
+        if (enableLandingSlowdown && progress >= landingStartPercent)
+        {
+            float t = Mathf.InverseLerp(landingStartPercent, 1f, progress);
+            slowFactor = Mathf.Lerp(1f, 0.1f, t);
+        }
+
+        float step = speed * slowFactor * Time.deltaTime;
+
+        while (step > 0f && segIndex < points.Count - 1)
+        {
+            Vector3 a = points[segIndex];
+            Vector3 b = points[segIndex + 1];
+            float segLen = segLengths[segIndex];
+
+            if (segLen < 1e-6f)
             {
-                isMoving = false;
-                currentVelocity = Vector3.zero; // Reset velocity to avoid overshooting
+                segIndex++;
+                alongSeg = 0f;
+                continue;
+            }
+
+            Vector3 segDir = (b - a) / segLen;
+            float remainOnSeg = segLen - alongSeg;
+
+            if (step < remainOnSeg)
+            {
+                alongSeg += step;
+                traveled += step;
+                transform.position = a + segDir * alongSeg;
+
+                Vector3 faceDir = GetCornerBlendedDir(segDir);
+                ApplySmoothedHeading(faceDir);
+                step = 0f;
+            }
+            else
+            {
+                step -= remainOnSeg;
+                traveled += remainOnSeg;
+                segIndex++;
+                alongSeg = 0f;
+                transform.position = b;
+
+                if (segIndex >= points.Count - 1)
+                {
+                    transform.position = points[^1];
+                    if (enableLandingScaling)
+                        scalingTarget.localScale = landingScale;
+                    isMoving = false;
+                    return;
+                }
+                else
+                {
+                    Vector3 nextSegDir = (points[segIndex + 1] - points[segIndex]).normalized;
+                    ApplySmoothedHeading(GetCornerBlendedDir(nextSegDir));
+                }
             }
         }
+    }
+
+    // --- Rotation helpers ---
+
+    Vector3 GetCornerBlendedDir(Vector3 currentSegDir)
+    {
+        if (segIndex < points.Count - 2)
+        {
+            Vector3 nextDir = (points[segIndex + 2] - points[segIndex + 1]).normalized;
+            float segLen = Mathf.Max(segLengths[segIndex], 1e-6f);
+            float t = Mathf.Clamp01(alongSeg / segLen);
+            t = t * t * (3f - 2f * t);
+            Vector3 blended = Vector3.Slerp(currentSegDir, nextDir, t);
+            if (blended.sqrMagnitude > 1e-10f) return blended.normalized;
+        }
+        return currentSegDir;
+    }
+
+    bool GetBlendedDir(out Vector3 dir)
+    {
+        dir = Vector3.right;
+        if (points.Count < 2) return false;
+        float d = Vector3.Distance(points[0], points[1]);
+        if (d < 1e-6f) return false;
+        Vector3 currentDir = (points[1] - points[0]) / d;
+        dir = GetCornerBlendedDir(currentDir);
+        return true;
+    }
+
+    void ApplySmoothedHeading(Vector3 desiredDir)
+    {
+        if (desiredDir.sqrMagnitude < 1e-10f) return;
+
+        float desired = Mathf.Atan2(desiredDir.y, desiredDir.x) * Mathf.Rad2Deg - 90f;
+        float target = Mathf.SmoothDampAngle(currentHeadingDeg, desired, ref headingVel, rotationSmoothTime);
+
+        float maxStep = maxTurnRateDegPerSec * Time.deltaTime;
+        float delta = Mathf.DeltaAngle(currentHeadingDeg, target);
+        delta = Mathf.Clamp(delta, -maxStep, maxStep);
+        currentHeadingDeg += delta;
+
+        transform.rotation = Quaternion.Euler(0f, 0f, currentHeadingDeg);
     }
 }
