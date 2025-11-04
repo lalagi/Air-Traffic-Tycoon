@@ -41,19 +41,10 @@ public class ReplaceSphereWithSpriteAnimation : MonoBehaviour
 
     private void SetupSpriteRenderer()
     {
-        // Remove unnecessary components
-        DestroyImmediate(GetComponent<MeshFilter>());
-        DestroyImmediate(GetComponent<MeshRenderer>());
-        DestroyImmediate(GetComponent<SphereCollider>());
-
         // Add SpriteRenderer if not already added
         if (spriteRenderer == null)
         {
             spriteRenderer = gameObject.GetComponent<SpriteRenderer>();
-            if (spriteRenderer == null)
-            {
-                spriteRenderer = gameObject.AddComponent<SpriteRenderer>();
-            }
         }
 
         // Generate sprites from texture

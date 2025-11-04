@@ -11,7 +11,7 @@ GameObject:
   - component: {fileID: 2519572834096963271}
   - component: {fileID: 6987640037636089523}
   - component: {fileID: 965635462043968475}
-  - component: {fileID: 133804884220104035}
+  - component: {fileID: 2631865730074600609}
   - component: {fileID: 7600584139994987918}
   m_Layer: 0
   m_Name: PlaneSprite
@@ -82,7 +82,7 @@ MonoBehaviour:
   landingStartPercent: 0.9
   landingScale: {x: 0.3, y: 0.3, z: 0.3}
   scalingTarget: {fileID: 0}
---- !u!114 &133804884220104035
+--- !u!114 &2631865730074600609
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
