@@ -1,4 +1,7 @@
-﻿using System.Collections.Generic;
+﻿// 2025. 11. 04. AI-Tag
+// This was created with the help of Assistant, a Unity Artificial Intelligence product.
+
+using System.Collections.Generic;
 using UnityEngine;
 
 [RequireComponent(typeof(Collider))]
@@ -20,6 +23,8 @@ public class ClickToPathMover_Raycast : MonoBehaviour
     private bool isMoving = false;
     private int currentIdx = 0;
 
+    private Vector3 currentVelocity = Vector3.zero; // Used for SmoothDamp
+
     void Awake()
     {
         cam = Camera.main; // Camera with MainCamera tag
@@ -37,12 +42,12 @@ public class ClickToPathMover_Raycast : MonoBehaviour
 
     void Update()
     {
-        // 1) Click start: only begin drawing if we actually hit THIS sphere
+        // 1) Click start: only begin drawing if we actually hit THIS object
         if (Input.GetMouseButtonDown(0))
         {
             if (HitThisObjectWithRay())
             {
-                Debug.Log("Click: you hit the sphere, starting drawing.");
+                Debug.Log("Click: you hit the object, starting drawing.");
                 isDrawing = true;
                 isMoving = false;
                 points.Clear();
@@ -81,7 +86,6 @@ public class ClickToPathMover_Raycast : MonoBehaviour
         Ray ray = cam.ScreenPointToRay(Input.mousePosition);
         if (Physics.Raycast(ray, out RaycastHit hit, 1000f, clickableLayers, QueryTriggerInteraction.Collide))
         {
-            // Debug.Log($"Ray hit: {hit.collider.name}");
             return hit.collider != null && hit.collider.gameObject == gameObject;
         }
         return false;
@@ -109,13 +113,27 @@ public class ClickToPathMover_Raycast : MonoBehaviour
     void MoveAlongPath()
     {
         Vector3 target = points[currentIdx];
-        transform.position = Vector3.MoveTowards(transform.position, target, speed * Time.deltaTime);
+        
+        // Smoothly move towards the target point
+        transform.position = Vector3.SmoothDamp(transform.position, target, ref currentVelocity, 0.1f);
 
-        if (Vector3.Distance(transform.position, target) <= 0.001f)
+        // Rotate towards the next point (2D rotation with 90-degree offset)
+        Vector3 direction = target - transform.position;
+        if (direction.sqrMagnitude > 0.001f) // Avoid jitter when very close to the target
+        {
+            float angle = Mathf.Atan2(direction.y, direction.x) * Mathf.Rad2Deg;
+            transform.rotation = Quaternion.Euler(0, 0, angle - 90f); // Subtract 90 degrees to align the nose
+        }
+
+        // Check if the object has reached the target point
+        if (Vector3.Distance(transform.position, target) <= 0.05f) // Slightly increase the threshold
         {
             currentIdx++;
             if (currentIdx >= points.Count)
+            {
                 isMoving = false;
+                currentVelocity = Vector3.zero; // Reset velocity to avoid overshooting
+            }
         }
     }
 }
